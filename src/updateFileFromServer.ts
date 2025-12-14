@@ -1,6 +1,6 @@
 import {Task, TodoistApi} from '@doist/todoist-api-typescript'
 import {App, Editor, Notice, } from 'obsidian'
-import {TodoistSettings} from "./DefaultSettings";
+import {TodoistSettings, SortOption, SortOrder, GroupOption} from "./DefaultSettings";
 
 
 export async function updateFileFromServer(settings: TodoistSettings, app: App) {
@@ -23,7 +23,7 @@ export async function updateFileFromServer(settings: TodoistSettings, app: App) 
 			console.log("Todoist Text: Updating keyword with todos. If this happened automatically and you did not intend for this " +
 				"to happen, you should either disable automatic replacement of your keyword with todos (via the settings), or" +
 				" exclude this file from auto replace (via the settings).")
-			const formattedTodos = await getServerData(keywordToQuery.todoistQuery, settings.authToken, settings.showSubtasks);
+			const formattedTodos = await getServerData(keywordToQuery.todoistQuery, settings.authToken, settings.showSubtasks, settings.sortBy, settings.sortOrder, settings.groupBy);
 
 			// re-read file contents to reduce race condition after slow server call
 			fileContents = await app.vault.read(file)
@@ -133,39 +133,51 @@ export async function toggleServerTaskStatus(e: Editor, settings: TodoistSetting
 	}
 }
 
-async function getServerData(todoistQuery: string, authToken: string, showSubtasks: boolean): Promise<string> {
+async function getServerData(todoistQuery: string, authToken: string, showSubtasks: boolean, sortBy: SortOption, sortOrder: SortOrder, groupBy: GroupOption): Promise<string> {
 	const api = new TodoistApi(authToken)
 
-	const tasks = await callTasksApi(api, todoistQuery);
-	
+	let tasks = await callTasksApi(api, todoistQuery);
+
 	if (tasks.length === 0){
 		new Notice(`Todoist text: You have no tasks matching filter "${todoistQuery}"`);
 	}
-	
+
+	// Apply sorting if requested
+	if (sortBy !== 'none') {
+		tasks = sortTasks(tasks, sortBy, sortOrder);
+	}
+
 	let returnString = "";
-	if (showSubtasks) {
-		// work through all the parent tasks
-		let parentTasks = tasks.filter(task => task.parentId == null);
-		parentTasks.forEach(task => {
-			returnString = returnString.concat(getFormattedTaskDetail(task, 0, false));
-			returnString = returnString.concat(getSubTasks(tasks, task.id, 1));
-		})
 
-		// determine subtasks that have a parent that wasn't returned in the query
-		let subtasks = tasks.filter(task => task.parentId != null);
-		const orphans = subtasks.filter(st => !parentTasks.contains(st));
-
-		// show the orphaned subtasks with a subtask indicator
-		orphans.forEach(task => {
-			returnString = returnString.concat(getFormattedTaskDetail(task, 0, true));
-			returnString = returnString.concat(getSubTasks(tasks, task.id, 1));
-		})
-
+	// Apply grouping if requested
+	if (groupBy !== 'none') {
+		returnString = formatTasksWithGrouping(tasks, showSubtasks, groupBy);
 	} else {
-		tasks.forEach(t => {
-			// show the tasks, inlcude a subtask indicator (since subtask display is disabled)
-			returnString = returnString.concat(getFormattedTaskDetail(t, 0, true));
-		})
+		// Original logic without grouping
+		if (showSubtasks) {
+			// work through all the parent tasks
+			let parentTasks = tasks.filter(task => task.parentId == null);
+			parentTasks.forEach(task => {
+				returnString = returnString.concat(getFormattedTaskDetail(task, 0, false));
+				returnString = returnString.concat(getSubTasks(tasks, task.id, 1));
+			})
+
+			// determine subtasks that have a parent that wasn't returned in the query
+			let subtasks = tasks.filter(task => task.parentId != null);
+			const orphans = subtasks.filter(st => !parentTasks.contains(st));
+
+			// show the orphaned subtasks with a subtask indicator
+			orphans.forEach(task => {
+				returnString = returnString.concat(getFormattedTaskDetail(task, 0, true));
+				returnString = returnString.concat(getSubTasks(tasks, task.id, 1));
+			})
+
+		} else {
+			tasks.forEach(t => {
+				// show the tasks, inlcude a subtask indicator (since subtask display is disabled)
+				returnString = returnString.concat(getFormattedTaskDetail(t, 0, true));
+			})
+		}
 	}
 
 	return returnString;
@@ -225,4 +237,108 @@ function getFormattedTaskDetail(task: Task, indent: number, showSubtaskSymbol: b
 function getTaskDescription(description: string, indent: number): string {
 	let tabs = "\t".repeat(indent);
 	return description.length === 0 ? "" : `\n${tabs}\t- ${description.trim().replace(/(?:\r\n|\r|\n)+/g, '\n\t- ')}`;
+}
+
+function sortTasks(tasks: Task[], sortBy: SortOption, sortOrder: SortOrder): Task[] {
+	const sorted = [...tasks].sort((a, b) => {
+		let comparison = 0;
+
+		switch (sortBy) {
+			case 'priority':
+				// Higher priority value = more important (P1=4, P2=3, P3=2, P4=1)
+				comparison = b.priority - a.priority;
+				break;
+			case 'due_date':
+				// Tasks without due dates go to the end
+				if (!a.due && !b.due) comparison = 0;
+				else if (!a.due) comparison = 1;
+				else if (!b.due) comparison = -1;
+				else comparison = a.due.date.localeCompare(b.due.date);
+				break;
+			case 'content':
+				comparison = a.content.localeCompare(b.content);
+				break;
+			case 'created_date':
+				comparison = a.createdAt.localeCompare(b.createdAt);
+				break;
+			default:
+				comparison = 0;
+		}
+
+		return sortOrder === 'asc' ? comparison : -comparison;
+	});
+
+	return sorted;
+}
+
+function formatTasksWithGrouping(tasks: Task[], showSubtasks: boolean, groupBy: GroupOption): string {
+	let returnString = "";
+
+	// Group tasks by the specified criteria
+	const groups = new Map<string, Task[]>();
+
+	tasks.forEach(task => {
+		let groupKey: string;
+
+		switch (groupBy) {
+			case 'priority':
+				// Map API priority (1-4) to display priority (4-1)
+				const priorityMap = new Map<number, number>([
+					[1, 4], [2, 3], [3, 2], [4, 1]
+				]);
+				groupKey = `P${priorityMap.get(task.priority)}`;
+				break;
+			case 'project':
+				groupKey = task.projectId || 'No Project';
+				break;
+			default:
+				groupKey = 'All Tasks';
+		}
+
+		if (!groups.has(groupKey)) {
+			groups.set(groupKey, []);
+		}
+		groups.get(groupKey)!.push(task);
+	});
+
+	// Sort groups by key for consistent ordering
+	const sortedGroupKeys = Array.from(groups.keys()).sort();
+
+	// Format each group
+	sortedGroupKeys.forEach(groupKey => {
+		const groupTasks = groups.get(groupKey)!;
+
+		// Add group header
+		returnString += `### ${groupKey}\n`;
+
+		// Format tasks in this group
+		if (showSubtasks) {
+			// work through all the parent tasks
+			let parentTasks = groupTasks.filter(task => task.parentId == null);
+			parentTasks.forEach(task => {
+				returnString = returnString.concat(getFormattedTaskDetail(task, 0, false));
+				returnString = returnString.concat(getSubTasks(groupTasks, task.id, 1));
+			})
+
+			// determine subtasks that have a parent that wasn't returned in the query
+			let subtasks = groupTasks.filter(task => task.parentId != null);
+			const orphans = subtasks.filter(st => !parentTasks.contains(st));
+
+			// show the orphaned subtasks with a subtask indicator
+			orphans.forEach(task => {
+				returnString = returnString.concat(getFormattedTaskDetail(task, 0, true));
+				returnString = returnString.concat(getSubTasks(groupTasks, task.id, 1));
+			})
+		} else {
+			groupTasks.forEach(t => {
+				// show the tasks, include a subtask indicator (since subtask display is disabled)
+				returnString = returnString.concat(getFormattedTaskDetail(t, 0, true));
+			})
+		}
+
+		// Add spacing between groups
+		returnString += '\n';
+	});
+
+	return returnString;
 }
