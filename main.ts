@@ -104,6 +104,9 @@ class TodoistPluginSettingTab extends PluginSettingTab {
 		this.addApiKeySetting(containerEl);
 		this.addEnableAutomaticReplacementSetting(containerEl);
 		this.addIncludeSubttasksSetting(containerEl);
+		this.addSortBySetting(containerEl);
+		this.addSortOrderSetting(containerEl);
+		this.addGroupBySetting(containerEl);
 		this.addKeywordTodoistQuerySetting(containerEl);
 		this.addExcludedDirectoriesSetting(containerEl);
 	}
@@ -134,6 +137,58 @@ class TodoistPluginSettingTab extends PluginSettingTab {
 							await this.plugin.saveSettings();
 						}
 					));
+	}
+
+	private addSortBySetting(containerEl: HTMLElement) {
+		new Setting(containerEl)
+			.setName('Sort By')
+			.setDesc("Choose how to sort your tasks. Options: none, priority, due_date, content (task name), created_date")
+			.addDropdown(dropdown =>
+				dropdown
+					.addOption('none', 'None')
+					.addOption('priority', 'Priority')
+					.addOption('due_date', 'Due Date')
+					.addOption('content', 'Task Name')
+					.addOption('created_date', 'Created Date')
+					.setValue(this.plugin.settings.sortBy)
+					.onChange(async (value) => {
+						this.plugin.settings.sortBy = value as any;
+						await this.plugin.saveSettings();
+					})
+			);
+	}
+
+	private addSortOrderSetting(containerEl: HTMLElement) {
+		new Setting(containerEl)
+			.setName('Sort Order')
+			.setDesc("Choose the sort order. Ascending (A-Z, 1-4) or Descending (Z-A, 4-1)")
+			.addDropdown(dropdown =>
+				dropdown
+					.addOption('asc', 'Ascending')
+					.addOption('desc', 'Descending')
+					.setValue(this.plugin.settings.sortOrder)
+					.onChange(async (value) => {
+						this.plugin.settings.sortOrder = value as any;
+						await this.plugin.saveSettings();
+					})
+			);
+	}
+
+	private addGroupBySetting(containerEl: HTMLElement) {
+		new Setting(containerEl)
+			.setName('Group By')
+			.setDesc("Choose how to group your tasks. Options: none, priority, project")
+			.addDropdown(dropdown =>
+				dropdown
+					.addOption('none', 'None')
+					.addOption('priority', 'Priority')
+					.addOption('project', 'Project')
+					.setValue(this.plugin.settings.groupBy)
+					.onChange(async (value) => {
+						this.plugin.settings.groupBy = value as any;
+						await this.plugin.saveSettings();
+					})
+			);
 	}
 
 	private addExcludedDirectoriesSetting(containerEl: HTMLElement) {
